@@ -1,149 +1,134 @@
 """
-Cobb-Douglas General Equilibrium: Market Clearing via Root-Finding
-==================================================================
-Finds prices p1, p2 such that total demand = total supply for each good.
-Normalization: p1 + p2 = 1 (only relative prices matter).
+Cobb-Douglas Market Equilibrium: Numerical Root-Finding (Task 2)
+================================================================
+Pure-exchange economy with N consumers and K = 2 goods.
+
+Each consumer j has:
+  * Cobb-Douglas preference weights alpha[j, :], with rows summing to 1
+    (alpha_jk is the spending share consumer j devotes to good k);
+  * exogenous wealth w_j (dollars).
+
+The economy has a fixed total endowment E_k of each good. Goal: find
+prices p such that aggregate demand equals total supply for each good,
+
+        D_k(p)  =  sum_j (alpha_jk * w_j) / p_k  =  E_k.
+
+Two solvers:
+  1. scipy.optimize.fsolve on the excess-demand vector
+     (numerical, the Task 2 deliverable).
+  2. Closed-form  p_k* = sum_j (alpha_jk * w_j) / E_k
+     (analytical, derived in Task 1, used here as ground truth).
+
+Both methods are run on the same parameters and the results are
+compared. Prices are reported in raw form and after normalising onto
+the simplex p_1 + p_2 = 1 (the convention used elsewhere in the
+project for comparison with the social planner's dual variables).
 """
+
+import warnings
 
 import numpy as np
 from scipy.optimize import fsolve
-import warnings
 
-# ── Parameters ────────────────────────────────────────────────────────────────
 
-# Each consumer i has preference weight alpha_i and endowment (e1_i, e2_i)
-# Feel free to change these values to experiment.
-alphas = np.array([0.3, 0.5, 0.7, 0.6])       # Cobb-Douglas alpha per consumer
-endowments_1 = np.array([1.0, 2.0, 1.5, 0.5]) # Endowment of good 1
-endowments_2 = np.array([2.0, 1.0, 0.5, 1.5]) # Endowment of good 2
+# ── Parameters: project's standard test economy ───────────────────────────────
 
-# Total supply (fixed)
-S1 = endowments_1.sum()
-S2 = endowments_2.sum()
+# alpha[j, k] = consumer j's Cobb-Douglas spending share on good k.
+# Rows sum to 1.
+alpha = np.array([
+    [0.6, 0.4],   # consumer A
+    [0.3, 0.7],   # consumer B
+    [0.5, 0.5],   # consumer C
+])
+w = np.array([100.0, 80.0, 60.0])     # consumer wealths (dollars)
+E = np.array([30.0,  40.0])           # total endowment per good
 
-# ── Demand Functions ───────────────────────────────────────────────────────────
+N, K = alpha.shape
 
-def demand(p1: float, p2: float, alpha: float, e1: float, e2: float):
+
+# ── Demand and Excess Demand ──────────────────────────────────────────────────
+
+def aggregate_demand(p):
+    """Aggregate Cobb-Douglas demand at prices p.
+
+    D_k(p) = sum_j (alpha_jk * w_j) / p_k.
     """
-    Optimal Cobb-Douglas demand for one consumer.
-      x1* = alpha  * w / p1
-      x2* = (1-alpha) * w / p2
-    where wealth w = p1*e1 + p2*e2.
-    """
-    w = p1 * e1 + p2 * e2
-    x1 = alpha * w / p1
-    x2 = (1 - alpha) * w / p2
-    return x1, x2
+    return (alpha * w[:, None]).sum(axis=0) / p
 
-def total_demand(p1: float, p2: float):
-    """Aggregate demand across all consumers."""
-    D1 = sum(demand(p1, p2, a, e1, e2)[0]
-             for a, e1, e2 in zip(alphas, endowments_1, endowments_2))
-    D2 = sum(demand(p1, p2, a, e1, e2)[1]
-             for a, e1, e2 in zip(alphas, endowments_1, endowments_2))
-    return D1, D2
 
-# ── Excess Demand (Walras' Law: one equation is redundant) ─────────────────────
+def excess_demand(p):
+    """Aggregate demand minus total supply, per good."""
+    return aggregate_demand(p) - E
 
-def excess_demand_system(p1: float) -> float:
-    """
-    With normalization p2 = 1 - p1, return excess demand for good 1.
-    At equilibrium this equals zero.
-    """
-    p2 = 1.0 - p1
-    if p1 <= 0 or p2 <= 0:
-        return np.inf
-    D1, _ = total_demand(p1, p2)
-    return D1 - S1
 
-# ── Root-Finding ───────────────────────────────────────────────────────────────
+# ── Numerical Equilibrium via Root-Finding ────────────────────────────────────
 
-def find_equilibrium_numerical():
-    """Use scipy fsolve to find the equilibrium price p1* ∈ (0,1)."""
-    p1_init = 0.5  # initial guess
+def find_equilibrium_numerical(p_init=None):
+    """Solve excess_demand(p) = 0 using scipy.optimize.fsolve."""
+    if p_init is None:
+        p_init = np.ones(K)
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        p1_sol, info, ier, msg = fsolve(
-            excess_demand_system, p1_init, full_output=True
-        )
-    p1_star = float(p1_sol[0])
-    p2_star = 1.0 - p1_star
+        sol, _, ier, _ = fsolve(excess_demand, p_init, full_output=True)
     converged = ier == 1
-    return p1_star, p2_star, converged
+    return sol, converged
 
-# ── Analytical Solution ────────────────────────────────────────────────────────
+
+# ── Closed-Form Equilibrium (Task 1 ground truth) ─────────────────────────────
 
 def find_equilibrium_analytical():
-    """
-    Closed-form equilibrium price ratio.
-    From market clearing for good 1:
-      sum_i [ alpha_i * (p1*e1_i + p2*e2_i) / p1 ] = S1
-    Rearranging with p2 = 1 - p1:
-      p1* = (sum alpha_i * e1_i) / (S1 + sum alpha_i * (e2_i - e1_i)... )
-    Solved directly:
-      p1* = A / (A + B)   where A = sum(alpha_i * e1_i), B = sum((1-alpha_i)*e1_i) ... 
-    
-    General closed form via Walras market clearing:
-      p1/p2 = [sum alpha_i * w_i / p1] = S1  → solve linearly.
-    """
-    # From Z1(p) = 0 with normalization p1+p2=1:
-    # sum_i alpha_i*(p1*e1i + (1-p1)*e2i) / p1 = S1
-    # sum_i alpha_i * e1i + (1-p1)/p1 * sum_i alpha_i*e2i = S1
-    A = (alphas * endowments_1).sum()   # sum alpha_i * e1_i
-    B = (alphas * endowments_2).sum()   # sum alpha_i * e2_i
-    # A + B*(1-p1)/p1 = S1
-    # A*p1 + B*(1-p1) = S1*p1
-    # p1*(A - B - S1) = -B
-    # p1 = B / (B + S1 - A)
-    p1_star = B / (B + S1 - A)
-    p2_star = 1.0 - p1_star
-    return p1_star, p2_star
+    """Closed-form market-clearing prices: p_k* = sum_j alpha_jk w_j / E_k."""
+    return (alpha * w[:, None]).sum(axis=0) / E
 
-# ── Validation & Report ────────────────────────────────────────────────────────
+
+def normalise(p):
+    """Project prices onto the simplex p_1 + p_2 + ... = 1."""
+    return p / p.sum()
+
+
+# ── Reporting ─────────────────────────────────────────────────────────────────
 
 def report():
-    print("=" * 60)
-    print("  Cobb-Douglas General Equilibrium — Market Clearing")
-    print("=" * 60)
-    print(f"\n  Consumers      : {len(alphas)}")
-    print(f"  Total supply 1 : {S1:.4f}")
-    print(f"  Total supply 2 : {S2:.4f}")
+    print("=" * 64)
+    print("  Cobb-Douglas Market Equilibrium  -  Task 2")
+    print("=" * 64)
+    print(f"  Consumers : {N}        Goods : {K}")
+    print(f"  alpha (rows = consumers, cols = goods):")
+    for j in range(N):
+        print(f"      consumer {chr(65+j)}: {alpha[j]}")
+    print(f"  wealths    : {w}")
+    print(f"  endowments : {E}")
 
-    # Numerical solution
-    p1_num, p2_num, ok = find_equilibrium_numerical()
-    D1_num, D2_num = total_demand(p1_num, p2_num)
-    print(f"\n  ── Numerical Solution (fsolve) ──")
-    print(f"  Converged      : {ok}")
-    print(f"  p1*            : {p1_num:.6f}")
-    print(f"  p2*            : {p2_num:.6f}")
-    print(f"  Total demand 1 : {D1_num:.6f}  (supply = {S1:.6f})")
-    print(f"  Total demand 2 : {D2_num:.6f}  (supply = {S2:.6f})")
-    print(f"  Excess demand 1: {D1_num - S1:.2e}")
-    print(f"  Excess demand 2: {D2_num - S2:.2e}")
+    p_num, ok = find_equilibrium_numerical()
+    print(f"\n  Numerical (fsolve)")
+    print(f"    converged      : {ok}")
+    print(f"    raw prices     : {p_num}")
+    print(f"    normalised     : {normalise(p_num)}")
+    print(f"    excess demand  : {excess_demand(p_num)}")
 
-    # Analytical solution
-    p1_ana, p2_ana = find_equilibrium_analytical()
-    D1_ana, D2_ana = total_demand(p1_ana, p2_ana)
-    print(f"\n  ── Analytical Solution (closed-form) ──")
-    print(f"  p1*            : {p1_ana:.6f}")
-    print(f"  p2*            : {p2_ana:.6f}")
-    print(f"  Total demand 1 : {D1_ana:.6f}  (supply = {S1:.6f})")
-    print(f"  Total demand 2 : {D2_ana:.6f}  (supply = {S2:.6f})")
+    p_ana = find_equilibrium_analytical()
+    print(f"\n  Closed-form (Task 1 aggregation)")
+    print(f"    raw prices     : {p_ana}")
+    print(f"    normalised     : {normalise(p_ana)}")
 
-    # Comparison
-    diff = abs(p1_num - p1_ana)
-    print(f"\n  ── Validation ──")
-    print(f"  |p1_num - p1_ana| = {diff:.2e}")
-    print(f"  {'✓ Solutions match!' if diff < 1e-6 else '✗ Discrepancy detected.'}")
+    diff = float(np.max(np.abs(p_num - p_ana)))
+    print(f"\n  Validation")
+    print(f"    |p_numerical - p_closed_form|  =  {diff:.2e}")
+    flag = "Solutions agree." if diff < 1e-6 else "Discrepancy detected."
+    print(f"    {flag}")
 
-    # Individual allocations at equilibrium
-    print(f"\n  ── Individual Allocations at p* ──")
-    print(f"  {'Consumer':>10} {'alpha':>7} {'x1*':>10} {'x2*':>10}")
-    print(f"  {'-'*40}")
-    for i, (a, e1, e2) in enumerate(zip(alphas, endowments_1, endowments_2)):
-        x1, x2 = demand(p1_ana, p2_ana, a, e1, e2)
-        print(f"  {i+1:>10} {a:>7.2f} {x1:>10.4f} {x2:>10.4f}")
-    print("=" * 60)
+    print(f"\n  Individual allocations at p*")
+    print(f"  {'Consumer':>9} {'alpha_1':>9} {'alpha_2':>9}"
+          f" {'wealth':>9} {'x_1':>10} {'x_2':>10}")
+    print(f"  {'-' * 60}")
+    for j in range(N):
+        x = alpha[j] * w[j] / p_num
+        print(f"  {chr(65+j):>9} {alpha[j, 0]:>9.2f} {alpha[j, 1]:>9.2f}"
+              f" {w[j]:>9.1f} {x[0]:>10.4f} {x[1]:>10.4f}")
+    print(f"  totals  =  {(alpha * w[:, None] / p_num).sum(axis=0)}"
+          f"   (should equal E = {E})")
+    print("=" * 64)
+
 
 if __name__ == "__main__":
     report()
